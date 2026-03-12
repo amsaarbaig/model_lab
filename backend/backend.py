@@ -392,15 +392,22 @@ def build_generate_prompt(use_case):
         "- \"answer\": The single exact correct answer as a JSON object with descriptive keys.\n\n"
         "Requirements:\n"
         "- Every answer must be a JSON object (not a raw string or array at the top level).\n"
+        "- Every question must be multiple-choice with exactly 3 options.\n"
+        "- The question must include all 3 answer options explicitly.\n"
+        "- Exactly one option is correct; the other two must be plausible but wrong.\n"
         "- Each question must have exactly ONE correct, deterministic answer.\n"
         "- Questions should be specific and unambiguous.\n"
         "- Each question should end with an instruction like "
         "'Respond as JSON with the schema: {…}'.\n\n"
         "Output ONLY a valid JSON array of these objects. No markdown, no explanation.\n\n"
         "Example:\n"
-        '[{"question": "What is the chemical symbol for water? '
-        'Respond as JSON with the schema: {\\\"symbol\\\": \\\"<string>\\\"}.", '
-        '"answer": {"symbol": "H2O"}}]'
+        "Use case: \"I need a model to be a chemistry expert.\"\n"
+        '[{"question":"What is the chemical symbol for water? This is a multiple choice question. Choose ONE correct answer. '
+        'Option 1: {\\\"symbol\\\":\\\"CO2\\\"}. '
+        'Option 2: {\\\"symbol\\\":\\\"H2O\\\"}. '
+        'Option 3: {\\\"symbol\\\":\\\"CH4\\\"}. '
+        'Respond as JSON with the schema: {\\\"symbol\\\":\\\"<string>\\\"}.",'
+        '"answer":{"symbol":"H2O"}}]'
     )
 
 
