@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Model Lab</title>
+    <link rel="stylesheet" href="styles.css">
+    <link rel="icon" type="image/png" href="logo.png">
+</head>
+<body>
+    <header>
+        <h1>Model Lab</h1>
+        <p class="subtitle">LLM Benchmarking &amp; Evaluation</p>
+    </header>
+
+    <main>
+        <!-- Step 1 ─ Questions -->
+        <section class="card" id="section-questions">
+            <h2><span class="step-num">1</span> Define Benchmark Questions</h2>
+            <p class="hint">Each question is sent to models using Ollama structured outputs (JSON schema constraint). Provide each question and its exact expected JSON answer.</p>
+
+            <!-- AI generation option -->
+            <details class="ai-generate" id="ai-generate-section">
+                <summary>Generate questions with AI</summary>
+                <div class="ai-inner">
+                    <label for="use-case">Describe your use case</label>
+                    <textarea id="use-case" rows="3" placeholder="e.g. I need a model for extracting structured data from invoices…"></textarea>
+                    <div class="ai-buttons">
+                        <button id="btn-generate" class="btn btn-secondary">Generate Questions</button>
+                        <button id="btn-copy-prompt" class="btn btn-outline">Copy Prompt</button>
+                    </div>
+                    <p id="ai-status" class="status-msg"></p>
+                </div>
+            </details>
+
+            <div id="qa-list">
+                <!-- rows injected by JS -->
+            </div>
+            <button id="btn-add-qa" class="btn btn-outline">+ Add Question</button>
+        </section>
+
+        <!-- Step 2 ─ Models -->
+        <section class="card" id="section-models">
+            <h2><span class="step-num">2</span> Select Models</h2>
+            <p class="hint">Enter Ollama model tags, one per line (e.g. <code>gemma3:270m</code>).</p>
+            <textarea id="model-list" rows="4" placeholder="gemma3:1b&#10;gemma3:4b&#10;phi4-mini:3.8b"></textarea>
+        </section>
+
+        <!-- Step 3 ─ Run -->
+        <section class="card" id="section-run">
+            <h2><span class="step-num">3</span> Run Benchmark</h2>
+            <button id="btn-run" class="btn btn-primary">Start Benchmark</button>
+            <div id="progress-area" class="hidden">
+                <div class="progress-bar-track">
+                    <div class="progress-bar-fill" id="progress-fill"></div>
+                </div>
+                <p id="progress-text" class="status-msg">Preparing…</p>
+            </div>
+        </section>
+
+        <!-- Step 4 ─ Results -->
+        <section class="card hidden" id="section-results">
+            <h2><span class="step-num">4</span> Results</h2>
+
+            <table id="results-table">
+                <thead>
+                    <tr>
+                        <th>Model</th>
+                        <th>RAM Usage</th>
+                        <th>Eval Rate (tok/s)</th>
+                        <th>Correct (%)</th>
+                    </tr>
+                </thead>
+                <tbody id="results-body"></tbody>
+            </table>
+
+            <!-- Per-model detail toggle -->
+            <div id="detail-sections"></div>
+
+            <button id="btn-download" class="btn btn-primary">Download PDF Report</button>
+        </section>
+    </main>
+
+    <footer>
+        <p>Model Lab &mdash; LLM evaluation tool</p>
+    </footer>
+
+    <script>
+    (() => {
+        // ── State ──
+        const API = "";  // same origin
+
+        // ── DOM refs ──
+        const qaList          = document.getElementById("qa-list");
+        const btnAddQA        = document.getElementById("btn-add-qa");
+        const btnGenerate     = document.getElementById("btn-generate");
+        const btnCopyPrompt   = document.getElementById("btn-copy-prompt");
+        const aiStatus        = document.getElementById("ai-status");
+        const useCaseInput    = document.getElementById("use-case");
+        const modelListInput  = document.getElementById("model-list");
+        const btnRun          = document.getElementById("btn-run");
+        const progressArea    = document.getElementById("progress-area");
+        const progressFill    = document.getElementById("progress-fill");
+        const progressText    = document.getElementById("progress-text");
+        const sectionResults  = document.getElementById("section-results");
+        const resultsBody     = document.getElementById("results-body");
+        const detailSections  = document.getElementById("detail-sections");
+        const btnDownload     = document.getElementById("btn-download");
+
+        // ── Helpers ──
+        function createQARow(q = "", a = "") {
+            const row = document.createElement("div");
+            row.className = "qa-row";
+            row.innerHTML = `
+                <textarea class="qa-question" rows="2" placeholder="Question / task prompt for the model">${escHtml(q)}</textarea>
+                <textarea class="qa-answer" rows="2" placeholder='Expected JSON, e.g. {"capital": "Paris"}'>${escHtml(a)}</textarea>
+                <button class="btn-remove" title="Remove">&times;</button>
+            `;
+            row.querySelector(".btn-remove").addEventListener("click", () => row.remove());
+            qaList.appendChild(row);
+        }
+
+        function escAttr(s) {
+            return s.replace(/&/g,"&amp;").replace(/"/g,"&quot;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+        }
+
+        function escHtml(s) {
+            const d = document.createElement("div");
+            d.textContent = s;
+            return d.innerHTML;
+        }
+
+        function collectQA() {
+            const rows = qaList.querySelectorAll(".qa-row");
+            const pairs = [];
+            rows.forEach(r => {
+                const q = r.querySelector(".qa-question").value.trim();
+                const a = r.querySelector(".qa-answer").value.trim();
+                if (q && a) pairs.push({ question: q, answer: a });
+            });
+            return pairs;
+        }
+
+        function collectModels() {
+            return modelListInput.value
+                .split("\n")
+                .map(s => s.trim())
+                .filter(Boolean);
+        }
+
+        function bytesToHuman(b) {
+            if (b == null) return "N/A";
+            const units = ["B","KB","MB","GB","TB"];
+            let i = 0;
+            while (Math.abs(b) >= 1024 && i < units.length - 1) { b /= 1024; i++; }
+            return b.toFixed(1) + " " + units[i];
+        }
+
+        // ── AI question generation ──
+        btnGenerate.addEventListener("click", async () => {
+            const useCase = useCaseInput.value.trim();
+            if (!useCase) { aiStatus.textContent = "Please describe your use case."; return; }
+
+            btnGenerate.disabled = true;
+            aiStatus.textContent = "Generating questions with AI (this may take a moment)…";
+
+            try {
+                const resp = await fetch(API + "/api/generate-questions", {
+                    method: "POST",
+                    headers: {"Content-Type": "application/json"},
+                    body: JSON.stringify({ use_case: useCase })
+                });
+                const data = await resp.json();
+                if (data.error) { aiStatus.textContent = "Error: " + data.error; return; }
+
+                // Clear existing rows and populate
+                qaList.innerHTML = "";
+                (data.questions || []).forEach(q => createQARow(q.question, q.answer));
+                aiStatus.textContent = `Generated ${data.questions.length} questions. Edit them as needed.`;
+            } catch (e) {
+                aiStatus.textContent = "Request failed: " + e.message;
+            } finally {
+                btnGenerate.disabled = false;
+            }
+        });
+
+        // ── Copy prompt to clipboard ──
+        btnCopyPrompt.addEventListener("click", async () => {
+            const useCase = useCaseInput.value.trim();
+            if (!useCase) { aiStatus.textContent = "Please describe your use case first."; return; }
+
+            try {
+                const resp = await fetch(API + "/api/build-prompt", {
+                    method: "POST",
+                    headers: {"Content-Type": "application/json"},
+                    body: JSON.stringify({ use_case: useCase })
+                });
+                const data = await resp.json();
+                if (data.error) { aiStatus.textContent = "Error: " + data.error; return; }
+
+                await navigator.clipboard.writeText(data.prompt);
+                aiStatus.textContent = "Prompt copied to clipboard! Paste it into your preferred LLM.";
+            } catch (e) {
+                aiStatus.textContent = "Failed to copy: " + e.message;
+            }
+        });
+
+        // ── Add blank row ──
+        btnAddQA.addEventListener("click", () => createQARow());
+
+        // ── Start with 3 empty rows ──
+        for (let i = 0; i < 3; i++) createQARow();
+
+        // ── Run benchmark ──
+        btnRun.addEventListener("click", async () => {
+            const questions = collectQA();
+            const models = collectModels();
+
+            if (!questions.length) { alert("Add at least one question–answer pair."); return; }
+            if (!models.length) { alert("Enter at least one model."); return; }
+
+            btnRun.disabled = true;
+            progressArea.classList.remove("hidden");
+            sectionResults.classList.add("hidden");
+            progressFill.style.width = "0%";
+            progressText.textContent = `Benchmarking ${models.length} model(s)… This may take a while.`;
+
+            // Animate indeterminate progress
+            let pct = 0;
+            const iv = setInterval(() => {
+                pct = Math.min(pct + 0.5, 95);
+                progressFill.style.width = pct + "%";
+            }, 500);
+
+            try {
+                const resp = await fetch(API + "/api/benchmark", {
+                    method: "POST",
+                    headers: {"Content-Type": "application/json"},
+                    body: JSON.stringify({ models, questions })
+                });
+                const data = await resp.json();
+
+                clearInterval(iv);
+                progressFill.style.width = "100%";
+                progressText.textContent = "Done!";
+
+                renderResults(data);
+            } catch (e) {
+                clearInterval(iv);
+                progressText.textContent = "Benchmark failed: " + e.message;
+            } finally {
+                btnRun.disabled = false;
+            }
+        });
+
+        // ── Render results ──
+        function renderResults(data) {
+            const benchmarks = data.benchmarks || [];
+            resultsBody.innerHTML = "";
+            detailSections.innerHTML = "";
+
+            benchmarks.forEach(b => {
+                // Summary row
+                const tr = document.createElement("tr");
+                if (b.error) {
+                    tr.innerHTML = `<td>${escHtml(b.model)}</td><td colspan="3" class="error-cell">Error: ${escHtml(b.error)}</td>`;
+                } else {
+                    tr.innerHTML = `
+                        <td>${escHtml(b.model)}</td>
+                        <td>${bytesToHuman(b.ram_bytes)}</td>
+                        <td>${b.eval_rate.toFixed(2)}</td>
+                        <td>${b.percent_correct.toFixed(1)}%</td>
+                    `;
+                }
+                resultsBody.appendChild(tr);
+
+                // Detail section
+                if (b.results && b.results.length) {
+                    const sec = document.createElement("details");
+                    sec.className = "detail-block";
+                    sec.innerHTML = `<summary>${escHtml(b.model)} — detailed answers</summary>`;
+                    const tbl = document.createElement("table");
+                    tbl.className = "detail-table";
+                    tbl.innerHTML = `<thead><tr><th>Question</th><th>Expected</th><th>Model Answer</th><th>Correct</th></tr></thead><tbody></tbody>`;
+                    const tbody = tbl.querySelector("tbody");
+                    b.results.forEach(r => {
+                        const rr = document.createElement("tr");
+                        const ans = r.model_answer.length > 300 ? r.model_answer.slice(0,300) + "…" : r.model_answer;
+                        rr.innerHTML = `
+                            <td>${escHtml(r.question)}</td>
+                            <td>${escHtml(r.expected)}</td>
+                            <td>${escHtml(ans)}</td>
+                            <td class="${r.correct ? 'correct' : 'incorrect'}">${r.correct ? '✓' : '✗'}</td>
+                        `;
+                        tbody.appendChild(rr);
+                    });
+                    sec.appendChild(tbl);
+                    detailSections.appendChild(sec);
+                }
+            });
+
+            if (data.report_error) {
+                const p = document.createElement("p");
+                p.className = "status-msg";
+                p.textContent = "PDF generation failed: " + data.report_error;
+                detailSections.appendChild(p);
+            }
+
+            sectionResults.classList.remove("hidden");
+            sectionResults.scrollIntoView({ behavior: "smooth" });
+        }
+
+        // ── Download PDF ──
+        btnDownload.addEventListener("click", () => {
+            window.location.href = API + "/api/report";
+        });
+    })();
+    </script>
+</body>
+</html>
